@@ -1,0 +1,505 @@
+---
+title: "GAMLSS_HCP"
+subtitle: "Calculating centiles based on population-level model."
+author: "Kaidi Kang and Simon Vandekar"
+date: "2022-09-01"
+output:
+    bookdown::html_document2:
+      toc: true
+      number_sections: true
+      fig_caption: TRUE
+      toc_float: 
+        collapsed: false
+      code_folding: hide
+      fig_width: 6
+      fig_height: 4
+      keep_md: yes
+link-citations: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, message = FALSE}
+knitr::opts_knit$set(root.dir = 'C:/Users/ashua/OneDrive - VUMC/Work/05_OngoingProjects/Lifespan/KaidiReports/GAMLSS_HCP/')
+
+library(gamlss)
+library(splines)
+library(table1)
+library(magrittr)
+library(plyr)
+library(dplyr)
+library(ggplot2)
+```
+
+
+# Summary
+In this project, we would like to implement the GAMLSS model to model the growth curves/charts of the brain using the HCP data.
+
+**For this specific report:** The deviation score / centiles are calculated based the population-level curves. The variable `Family` is still included as random effects in the modeling to deal with the correlation between subjects, but when calculating the centiles for each subject, the population-level model (the one without random effects) is used. 
+
+# Data
+```{r}
+data = read.csv("HCP_PSYXSEC_DataHarmonized_220829.csv")
+```
+
+```{r}
+# some data cleaning
+# data$Family[is.na(data$Family)] = paste0("temp", 1:sum(is.na(data$Family)))
+# data <- data %>% group_by(Family) %>% slice_sample(n=1)
+# nrow(temp) == temp$Family %>% unique %>% length
+
+data$dx_group = data$Diagnosis
+data$dx_group[data$Diagnosis != "Normal Control"] = "Schizophrenia Spectrum"
+hcp = subset(data, Dataset == "HCP")
+
+# Adding fake family ID to the subject from PSYXSEC
+# ind = data$Dataset == "PSYXSEC"
+# data$Family[ind] = paste0("f_", 1:sum(ind))
+# # subset(data, Dataset == "PSYXSEC")
+
+data$Family %<>% as.factor()
+
+data$group = NA
+data$group[data$Dataset == "HCP"] = "Normal - HCP"
+data$group[data$dx_group == "Normal Control" & data$Dataset == "PSYXSEC"] = "Normal - PSYXSEC"
+data$group[data$dx_group == "Schizophrenia Spectrum"] = "SZ Spectrum - PSYXSEC"
+```
+
+**Note**: ~~The random intercepts/offsets for `Family` is not included. I noticed that after including the random offset `Family`, it becomes difficult for the models to converge. For most of the family units in the data, they only have one subjects participating in the studies. Moreover, there are 211 subjects have `NA` Family ID. **This analysis ingored the possible correlation between individuals from the same family**.~~
+
+The random intercepts/offsets for `Family` are now included in the modeling of the population **mean** ($\mu$) and **variance** ($\mu^2 \times \sigma^2$). All healthy controls from the HCP studies have family ID, however, those from the PSYXSEC study (445 subjects) have missing family ID.
+
+```{r}
+table(hcp$Family) %>% hist(main = "Num of subjects in each family")
+# sum(is.na(data$Family[data$Dataset != "HCP"]))
+```
+
+```{r}
+table1(~ Age + Site + Race + eTIV + Sex + dx_group | Dataset, data = data)
+```
+
+# GAMLSS
+
+Separate GAMLSS models are fitted to each outcome using the subjects from the HCP study, respectively. Generalized gamma (GG) distribution is specified for each of the outcome. 
+
+The final model for the trajectories of all measures are specified as below. We use `R.VA` as an example:
+
+$$
+\mathrm{R.VA} \sim GG(\mu, \sigma, \nu)
+$$
+
+$$
+log(\mu) = \beta_{\mu} + \beta_{\mu, age} \times ns(Age, df = 3) + \beta_{\mu, sex} \times Sex + \beta_{\mu, race} \times Race + \beta_{\mu, eTIV}\times I(neTIV/10000) + \alpha_{Family}
+$$
+
+
+$$
+log(\sigma) = \beta_{\sigma} + \beta_{\sigma, age} \times ns(Age, df = 3) + \beta_{\sigma, sex} \times Sex + \beta_{\sigma, race} \times Race + \beta_{\sigma, neTIV}\times I(neTIV/10000) + \alpha_{Family}
+$$
+$$
+\nu = \alpha_{\nu}
+$$
+
+```{r}
+# control function for gamlss
+con_f <- gamlss.control(c.crit = 0.001, n.cyc = 300)
+
+fit_gamlss <- function(y, full.data = data, con = con_f) {
+  # select the variables needed. The function doesn't allow the existence of missing value in any variables even the variables are not included in the modeling.
+  # Note: there is a bug in `predict.gamlss` -- when your data frame is called `data`, there will be a problem in predicting...
+  
+  full.data = full.data[, c(y, "Dataset", "dx_group", "Age", "Sex", "Race", "neTIV", "Family")] 
+  
+  # HCP subjects
+  hcp = subset(full.data, Dataset == "HCP")
+
+  num_obs = nrow(hcp)
+  hcp = na.omit(hcp)
+  num_obs_na.rm = nrow(hcp)
+  cat("Notes:", num_obs - num_obs_na.rm, "observations were removed due to missingness. \n" )
+  
+  mu.form = as.formula(paste0(y, "~ ns(Age, df = 3) + Sex + Race + I(neTIV/10000) + re(random = ~1|Family)"))
+  sigma.form = ~ ns(Age, df = 3) + Sex + Race + I(neTIV/10000) + re(random = ~1|Family)
+  
+  fit = gamlss(mu.form,
+               sigma.formula = sigma.form,
+               nu.formula = ~1,
+               data = hcp,
+               method = RS(), # or `CG()` or mixed()
+               family = GG,
+               control=con)
+  return(fit)
+}
+```
+
+```{r}
+# Test
+#fit = fit_gamlss("nR.VA")
+```
+
+
+```{r}
+# @param centile_only: if only return centile estimates, no plots. Default = FALSE
+
+plot_gamlss = function(obj, title, full.data = data, centile_only = FALSE){
+  
+  # 1. DATASET
+  y = obj$mu.formula[[2]] %>% as.character()
+  full.data = full.data[, c("Subject", y, "Dataset", "dx_group", "group", "Age", "Sex", "Race", "neTIV", "Family")] 
+  
+  # HCP subjects
+  hcp = subset(full.data, Dataset == "HCP")
+  # hcp = model.matrix(obj)
+  
+  # Schizophrenia Spectrum Subjects
+  sz = subset(full.data, Dataset != "HCP")
+  
+  # 2. POPULATION CURVE (averaged over the sample)
+  if (!centile_only){
+    age_range = range(hcp$Age)
+    age_grid = seq(from = age_range[1], to = age_range[2], by = 0.5)
+    pred_data = hcp[, colnames(hcp) != "Age"]
+    pred_data = cbind(Age = rep(age_grid, each = nrow(pred_data)), pred_data)
+  
+    # predict "mu" (without random effects)
+    # Note: you have to add the original data here....
+    mean_mu = predict(obj, data = hcp, newdata = pred_data, what = "mu", type = "response")
+    # predict "sigma"
+    mean_sigma = predict(obj, data = hcp, newdata = pred_data, what = "sigma", type = "response")
+    # predict "nu"
+    mean_nu = predict(obj, data = hcp, newdata = pred_data, what = "nu", type = "response")
+    ## obtain the corresponding 2.5% and 97.5% centiles for mu for each subject
+    mu_median =  gamlss.dist::qGG(0.5, mu = mean_mu, sigma = mean_sigma , nu = mean_nu )
+    mu_LL = gamlss.dist::qGG(0.05, mu = mean_mu, sigma = mean_sigma , nu = mean_nu )
+    mu_UL = gamlss.dist::qGG(0.95, mu = mean_mu, sigma = mean_sigma , nu = mean_nu )
+    
+    mean_var = mean_sigma^2 * mean_mu^2  
+    
+    pred_data = cbind(mean_mu, mu_median, mu_LL, mu_UL, mean_sigma, mean_var, mean_nu, pred_data)
+  
+    ## marginal means of median & variance at each age value
+    marg_mean_mu_median = aggregate( mu_median ~ Age*Sex, data = pred_data, mean )
+    marg_mean_mu_LL = aggregate( mu_LL ~ Age*Sex, data = pred_data, mean )
+    marg_mean_mu_UL = aggregate( mu_UL ~ Age*Sex, data = pred_data, mean )
+    marg_mean_sigma = aggregate(mean_sigma ~ Age*Sex, data = pred_data, mean )
+    marg_mean_var = aggregate(mean_var ~ Age*Sex, data = pred_data, mean)
+  
+    # 3. PLOT
+    xlim = c(0, 100)
+    yrange = range(hcp[,y])
+    ymin = round_any(yrange[1],10,f=floor)
+    ymax = round_any(yrange[2],10,f=ceiling)
+    ylim = c(ymin,ymax)
+    ybreaks = floor((ylim[2]-ylim[1])/4)
+    
+
+    ## mu over age
+    #main = paste0("Population trajectory of the median for ", y, "\n (with 5% and 95% centiles (dotted lines))"), 
+    par(mar = c(4, 5.2, 2.5, 0.5)+0.03)
+    #,mgp = c(2, 2, 0)) # Set the margin on all sides to 2
+    
+    colors <- c("pink", 
+            "dodgerblue")
+
+    plot(as.formula(paste0(y, "~ Age")), data = hcp, frame.plot = FALSE, 
+         xlab = substitute(paste(bold("Age (years)"))),
+         xlim = xlim, ylim = ylim,
+         yaxt = "n",
+         ylab = expression(bold(paste("Volumes (mm"^3*")"))), 
+         main = title,
+         col = colors[factor(Sex)],
+         cex.lab=1.7,
+         cex.main=2)
+    
+    #adjustcolor("dodgerblue", alpha.f = 0.35)) 
+    
+    axis(side = 2, at=seq(ylim[1],ylim[2],ybreaks))
+  
+    lines(mu_median ~ Age, data = marg_mean_mu_median[marg_mean_mu_median$Sex=="F",], type = "l", col = "deeppink", lwd = 4)
+    lines(mu_LL ~ Age, data = marg_mean_mu_LL[marg_mean_mu_median$Sex=="F",], type = "l", lty = 3, col = "deeppink", lwd = 3)
+    lines(mu_UL ~ Age, data = marg_mean_mu_UL[marg_mean_mu_median$Sex=="F",], type = "l", lty = 3, col = "deeppink", lwd = 3)
+
+    lines(mu_median ~ Age, data = marg_mean_mu_median[marg_mean_mu_median$Sex=="M",], type = "l", col = "blue", lwd = 4)
+    lines(mu_LL ~ Age, data = marg_mean_mu_LL[marg_mean_mu_median$Sex=="M",], type = "l", lty = 3, col = "blue", lwd = 3)
+    lines(mu_UL ~ Age, data = marg_mean_mu_UL[marg_mean_mu_median$Sex=="M",], type = "l", lty = 3, col = "blue", lwd = 3)
+ 
+    
+    ## variance over age
+    plot(mean_var ~ Age, data = marg_mean_var, type = "l", frame.plot = FALSE,
+         lwd = 4, col = "dodgerblue",
+         ylab = "Variance", xlab = "Age",
+         main = paste0("Normative variance for ", y))
+  }
+
+
+    
+  # 4. INDIVIDUAL DEVIANCE (i.e., deriving centile conditional on subject characteristics)
+  # Note: function `centiles()` only works for model fits with one covariate.
+  
+  # 4.1 predict the centiles for HCP subjects 
+  # ~~sing `predict` function to obtain subject-specific distribution parameter values~~
+  # ~~Note: the predicted values are based on the values of the random effects.~~
+  # NEW: the predicted values are NOT based on the random effects
+  rdata = full.data
+  ## design matrix for HCP subset
+  ns_obj = ns(hcp$Age, df = 3)
+  ns_age = predict(ns_obj, rdata$Age)
+  sex = ifelse(rdata$Sex == "M", 1, 0)
+  race_other = ifelse(rdata$Race == "Other", 1, 0)
+  race_white = ifelse(rdata$Race == "White", 1, 0)
+  neTIV_10000 = rdata$neTIV/10000
+  mod_mat = cbind(1, ns_age, sex, race_other, race_white, neTIV_10000)
+  
+  ## coef estimates
+  coef_all = coefAll(obj)
+  mu_beta_hat = coef_all$mu[1:ncol(mod_mat)]
+  sigma_beta_hat = coef_all$sigma[1:ncol(mod_mat)]
+  nu_beta_hat = coef_all$nu
+  ## predicted values
+  pred_mu = exp(mod_mat %*% mu_beta_hat)
+  pred_sigma = exp(mod_mat %*% sigma_beta_hat)
+  pred_nu = rep(nu_beta_hat, nrow(rdata))
+  rdata = cbind(rdata, pred_mu, pred_sigma, pred_nu)
+  
+  # pred_mu = predict(obj, data = hcp, what = "mu", type = "response")
+  # pred_sigma = predict(obj, data = hcp, what = "sigma", type = "response")
+  # pred_nu = predict(obj, data = hcp, what = "nu", type = "response")
+  # hcp = cbind(hcp, pred_mu, pred_sigma, pred_nu)
+  # obtain individual percentiles from subject-specific GG distributions
+  rdata$subj_centile = gamlss.dist::pGG(rdata[, y], mu = rdata$pred_mu, sigma = rdata$pred_sigma, nu = rdata$pred_nu)
+  
+  ## DENSITY PLOT OF DEVIANCE
+  
+  if (!centile_only){
+      plot_centile = ggplot(rdata, aes(x = subj_centile, fill = group, col = group)) + geom_histogram(aes(y=..density..), alpha = 0.2, bins = 30, position="identity") + geom_density(alpha=.2) + labs(title = paste("Centile density plot for", y), x = "Centiles", y = "Density") + facet_wrap(~group, ncol = 1)
+    centile_med = aggregate( subj_centile ~ group, data = rdata, median)
+    plot_centile = plot_centile + geom_point(data = centile_med, aes(x = subj_centile, y = 0, col = group), size = 3) + labs(title = y, x = "Centiles", y = "Density")
+    print(plot_centile)
+
+    # # individual deviance (centiles) vs rank
+    temp_data = subset(rdata, Dataset != "HCP" & dx_group == "Normal Control")
+    temp_data$rank_n = rank(temp_data$subj_centile)/nrow(temp_data)
+    plot_centile_v_rank = ggplot(temp_data, aes(x = rank_n, y = subj_centile, col = group)) + geom_point() + geom_abline(slope = 1) + labs(title = paste("rank/sample size vs centiles for", y, "- NC from the PSYXSEC study"), x = "Rank scaled by sample size", y = "Centiles")
+    print(plot_centile_v_rank)
+  }
+  # return centiles
+  if (centile_only) return(rdata)
+}
+```
+
+```{r}
+# TEST
+# plot_gamlss(fit)
+```
+
+# Model Results
+
+## AV
+```{r fig1, dev='png',dpi=300}
+#fit_R.AV <- fit_gamlss(y = "nR.AV")
+#saveRDS(fit_R.AV, file = "fit/fit_R.AV.rds")
+fit_R.AV <- readRDS("gamlss_fit_obj/fit_R.AV.rds")
+summary(fit_R.AV)
+plot_gamlss(fit_R.AV,"Right Anteroventral")
+
+
+# con_temp <- gamlss.control(c.crit = 0.001, n.cyc = 300, mu.step = 0.1, sigma.step = 0.1, nu.step = 0.1)
+# fit_L.AV <- fit_gamlss(y = "nL.AV", con = con_temp) 
+# saveRDS(fit_L.AV, file = "fit/fit_L.AV.rds")
+fit_L.AV <- readRDS("gamlss_fit_obj/fit_L.AV.rds")
+summary(fit_L.AV)
+plot_gamlss(fit_L.AV,"Left Anteroventral")
+```
+
+## VA
+```{r fig2, dev='png',dpi=300}
+# fit_R.VA <- fit_gamlss(y = "nR.VA")
+# saveRDS(fit_R.VA, file = "fit/fit_R.VA.rds")
+fit_R.VA <- readRDS("gamlss_fit_obj/fit_R.VA.rds")
+summary(fit_R.VA)
+fit_R.VA %>% plot_gamlss("Right Ventral Anterior")
+            
+# fit_L.VA <- fit_gamlss(y = "nL.VA")
+# saveRDS(fit_L.VA, file = "fit/fit_L.VA.rds")
+fit_L.VA <- readRDS("gamlss_fit_obj/fit_L.VA.rds")
+summary(fit_L.VA)
+fit_L.VA %>% plot_gamlss("Left Ventral Anterior")
+```
+
+## VL
+```{r fig3, dev='png',dpi=300}
+# fit_R.VL <- fit_gamlss(y = "nR.VL")
+# saveRDS(fit_R.VL, file = "fit/fit_R.VL.rds")
+fit_R.VL <- readRDS("gamlss_fit_obj/fit_R.VL.rds")
+summary(fit_R.VL)
+fit_R.VL %>% plot_gamlss("Right Ventrolateral")
+
+# fit_L.VL <- fit_gamlss(y = "nL.VL")
+# saveRDS(fit_L.VL, file = "fit/fit_L.VL.rds")
+fit_L.VL <- readRDS("gamlss_fit_obj/fit_L.VL.rds")
+summary(fit_L.VL)
+fit_L.VL %>% plot_gamlss("Left Ventrolateral")
+```
+
+## VPL
+```{r fig4, dev='png',dpi=300}
+# con_temp <- gamlss.control(c.crit = 0.001, n.cyc = 300, mu.step = 0.01, sigma.step = 0.01, nu.step = 0.01)
+# fit_R.VPL <- fit_gamlss(y = "nR.VPL", con = con_temp) 
+# saveRDS(fit_R.VPL, file = "fit/fit_R.VPL.rds")
+fit_R.VPL <- readRDS("gamlss_fit_obj/fit_R.VPL.rds")
+summary(fit_R.VPL)
+fit_R.VPL %>% plot_gamlss("Right Ventral Posterolateral")
+# 
+# fit_L.VPL <- fit_gamlss(y = "nL.VPL")
+# saveRDS(fit_L.VPL, file = "fit/fit_L.VPL.rds")
+fit_L.VPL <- readRDS("gamlss_fit_obj/fit_L.VPL.rds")
+summary(fit_L.VPL)
+fit_L.VPL %>% plot_gamlss("Left Ventral Posterolateral")
+```
+
+## Pul
+```{r fig5, dev='png',dpi=300}
+# fit_R.Pul <- fit_gamlss(y = "nR.Pul")
+# saveRDS(fit_R.Pul, file = "fit/fit_R.Pul.rds")
+fit_R.Pul <- readRDS("gamlss_fit_obj/fit_R.Pul.rds")
+summary(fit_R.Pul)
+fit_R.Pul %>% plot_gamlss("Right Pulvinar")
+
+# fit_L.Pul <- fit_gamlss(y = "nL.Pul")
+# saveRDS(fit_L.Pul, file = "fit/fit_L.Pul.rds")
+fit_L.Pul <- readRDS("gamlss_fit_obj/fit_L.Pul.rds")
+summary(fit_L.Pul)
+fit_L.Pul %>% plot_gamlss("Left Pulvinar")
+
+```
+
+## LGN
+```{r fig6, dev='png',dpi=300}
+# fit_R.LGN <- fit_gamlss(y = "nR.LGN")
+# saveRDS(fit_R.LGN, file = "fit/fit_R.LGN.rds")
+fit_R.LGN <- readRDS("gamlss_fit_obj/fit_R.LGN.rds")
+summary(fit_R.LGN)
+fit_R.LGN %>% plot_gamlss("Right Lateral Geniculate")
+
+# fit_L.LGN <- fit_gamlss(y = "nL.LGN")
+# saveRDS(fit_L.LGN, file = "fit/fit_L.LGN.rds")
+fit_L.LGN <- readRDS("gamlss_fit_obj/fit_L.LGN.rds")
+summary(fit_L.LGN)
+fit_L.LGN %>% plot_gamlss("Left Lateral Geniculate")
+
+```
+
+
+## MGN
+```{r fig7, dev='png',dpi=300}
+# fit_R.MGN <- fit_gamlss(y = "nR.MGN")
+# saveRDS(fit_R.MGN, file = "fit/fit_R.MGN.rds")
+fit_R.MGN <- readRDS("gamlss_fit_obj/fit_R.MGN.rds")
+summary(fit_R.MGN)
+fit_R.MGN  %>% plot_gamlss("Right Medial Geniculate")
+
+# fit_L.MGN <- fit_gamlss(y = "nL.MGN")
+# saveRDS(fit_L.MGN, file = "fit/fit_L.MGN.rds")
+fit_L.MGN <- readRDS("gamlss_fit_obj/fit_L.MGN.rds")
+summary(fit_L.MGN)
+fit_L.MGN %>% plot_gamlss("Left Medial Geniculate")
+
+```
+
+## CM
+
+```{r fig8, dev='png',dpi=300}
+# fit_R.CM <- fit_gamlss(y = "nR.CM")
+# saveRDS(fit_R.CM, file = "fit/fit_R.CM.rds")
+fit_R.CM <- readRDS("gamlss_fit_obj/fit_R.CM.rds")
+summary(fit_R.CM)
+fit_R.CM %>% plot_gamlss("Right Centromedian")
+
+# fit_L.CM <- fit_gamlss(y = "nL.CM")
+# saveRDS(fit_L.CM, file = "fit/fit_L.CM.rds")
+fit_L.CM <- readRDS("gamlss_fit_obj/fit_L.CM.rds")
+summary(fit_L.CM)
+fit_L.CM  %>% plot_gamlss("Left Centromedian")
+
+```
+
+## MD
+
+```{r fig9, dev='png',dpi=300}
+# fit_R.MD <- fit_gamlss(y = "nR.MD")
+# saveRDS(fit_R.MD, file = "fit/fit_R.MD.rds")
+fit_R.MD <- readRDS("gamlss_fit_obj/fit_R.MD.rds")
+summary(fit_R.MD)
+fit_R.MD  %>% plot_gamlss("Right Mediodorsal")
+
+# fit_L.MD <- fit_gamlss(y = "nL.MD")
+# saveRDS(fit_L.MD, file = "fit/fit_L.MD.rds")
+fit_L.MD <- readRDS("gamlss_fit_obj/fit_L.MD.rds")
+summary(fit_L.MD)
+fit_L.MD  %>% plot_gamlss("Left Mediodorsal")
+```
+
+# Centile Mahalanobis Distance (CMD)
+
+To create a composite score to indicate an individual's overall deviation from the normative curve, CMD is calculated for each subject. CMD for the $i$-th subject is formalized as
+$$
+D_i(x) = \sqrt{(x - \mu)^T S^{-1} (x-\mu) }
+$$
+
+where $x$ is the obtained centiles for each subject, $\mu$ and $S$ are the means and covariance of centiles among the normal controls (HCP subjects).
+
+
+```{r}
+# adding predicted centiles with respect to each outcome to the data
+outcome_var = paste0(rep(c("nR.", "nL."), times = 9), rep(c("AV", "VA", "VL", "VPL", "Pul", "LGN", "MGN", "CM", "MD"), each = 2))
+output_data = data[, c("Subject", "Family", "Diagnosis", "dx_group", "Dataset", "group", "Age", "Sex", "Race", "Site", "neTIV", outcome_var)]
+
+# obtaining the centile for each outcome
+for (k in outcome_var){
+  outcome = substring(k, 2)
+  fit = get(paste0("fit_", outcome))
+  centiles = plot_gamlss(fit, centile_only = TRUE)
+  # subject centile for this outcome
+  output_data = output_data[order(output_data$Subject), ]
+  centiles = centiles[order(centiles$Subject), ]
+  output_data = merge(output_data, centiles[, c("Subject", "subj_centile")], by = "Subject")
+  colnames(output_data)[colnames(output_data) == "subj_centile"] = paste0("centile_", outcome)
+}
+
+# CMD
+ind_row = output_data$group == "Normal - HCP"
+ind_col = substring(colnames(output_data), 1, 8) == "centile_" 
+S = cov(output_data[ind_row, ind_col])
+mu = colMeans(output_data[ind_row, ind_col])
+
+center_X = apply(output_data[, ind_col], 1, function(y) {y - mu}) %>% t()
+
+CMD = apply(center_X, 1, function(y) sqrt(c(y) %*% solve(S) %*% c(y)))
+
+output_data = cbind(output_data, CMD)
+```
+
+
+```{r}
+write.csv(output_data, "data_centiles_main.csv")
+```
+
+```{r}
+plot_CMD = ggplot(output_data, aes(x = CMD, fill = group, col = group)) + geom_histogram(aes(y=..density..), alpha = 0.2, bins = 50, position="identity") + geom_density(alpha=.2) + labs(x = "Centiles", y = "Density") 
+# + facet_wrap(~group, ncol = 1)
+CMD_med = aggregate( CMD ~ group, data = output_data, median)
+plot_CMD = plot_CMD + geom_point(data = CMD_med, aes(x = CMD, y = 0, col = group), size = 3) + labs(title = "Density of CMD by groups", x = "Centiles", y = "Density")
+print(plot_CMD)
+```
+
+
+```{r}
+plot_CMD = ggplot(output_data, aes(x = CMD, fill = dx_group, col = dx_group)) + geom_histogram(aes(y=..density..), alpha = 0.2, bins = 50, position="identity") + geom_density(alpha=.2) + labs(x = "Centiles", y = "Density") 
+# + facet_wrap(~group, ncol = 1)
+CMD_med = aggregate( CMD ~ dx_group, data = output_data, median)
+plot_CMD = plot_CMD + geom_point(data = CMD_med, aes(x = CMD, y = 0, col = dx_group), size = 3) + labs(title = "Density of CMD by diagnosis", x = "Centiles", y = "Density")
+print(plot_CMD)
+```
+

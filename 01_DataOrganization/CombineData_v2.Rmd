@@ -1,0 +1,117 @@
+---
+title: "CombineProjects"
+author: "Anna Huang"
+date: "06/02/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = 'D:/OneDrive - VUMC/Work/Lifespan/Data_Management/')
+#::opts_knit$set(root.dir = '/Users/ashuang/OneDrive - VUMC/Work/Lifespan/Data_Management/')
+```
+
+## Combine 3 projects
+
+R markdown script to combine the three projects and rename necessary variables 
+
+```{r}
+## Load Variables
+library(readxl)
+library(carData)
+library(car)
+library(plyr)
+HCP_YA <- read.csv("HCP_YA_AllCombined220331.csv")
+HCP_Devel <- read.csv("HCP_Devel_CombinedCort220602.csv")
+HCP_Aging <- read.csv("HCP_Aging_CombinedCortical220602.csv")
+PSYXSEC_data <- read.csv("PSYXSEC_Volumes_eTIV.csv")
+PSYXSEC_data$Family <- NA
+```
+
+## Re-do variable names
+
+You can also embed plots, for example:
+
+```{r}
+## Young Adult
+HCP_YA$Site <- "YUWash"
+HCP_YA$Diagnosis <- "Normal Control"
+YA <- HCP_YA[, c("Subject","Age_in_Yrs","Family_ID","Gender","Race","Site","Diagnosis",
+                 "estimatedtotalintracranialvol",
+             "L.1.THALAMUS","L.2.AV","L.4.VA","L.5.VLa","L.6.VLP","L.7.VPL",
+             "L.8.Pul","L.9.LGN","L.10.MGN","L.11.CM","L.12.MD.Pf",
+             "R.1.THALAMUS","R.2.AV","R.4.VA","R.5.VLa","R.6.VLP","R.7.VPL",
+             "R.8.Pul","R.9.LGN","R.10.MGN","R.11.CM","R.12.MD.Pf")]
+colnames(YA) <- c("Subject","Age","Family","Sex","Race","Site","Diagnosis",
+                  "eTIV",
+                  "L.Thalamus","L.AV","L.VA","L.VLa","L.VLP","L.VPL","L.Pul","L.LGN","L.MGN","L.CM","L.MD",
+                  "R.Thalamus","R.AV","R.VA","R.VLa","R.VLP","R.VPL","R.Pul","R.LGN","R.MGN","R.CM","R.MD")
+YA$Race <- mapvalues(YA$Race, c("White","Black or African Am.","More than one","Asian/Nat. Hawaiian/Othr Pacific Is.","Am. Indian/Alaskan Nat.","Unknown or Not Reported"),c("White","AA","Other","Other","Other","Other"))
+YA$Project <- "YA"
+YA$Dataset <- "HCP"
+
+## Developmental
+HCP_Devel$Diagnosis <- "Normal Control"
+Devel <- HCP_Devel[,c("Subject","Age.in.months.at.the.time.of.the.interview.test.sampling.imaging.",
+                      "Family_ID","Sex.of.subject.at.birth","Race.of.study.subject","Site","Diagnosis",
+                 "estimatedtotalintracranialvol",
+             "L.1.THALAMUS","L.2.AV","L.4.VA","L.5.VLa","L.6.VLP","L.7.VPL",
+             "L.8.Pul","L.9.LGN","L.10.MGN","L.11.CM","L.12.MD.Pf",
+             "R.1.THALAMUS","R.2.AV","R.4.VA","R.5.VLa","R.6.VLP","R.7.VPL",
+             "R.8.Pul","R.9.LGN","R.10.MGN","R.11.CM","R.12.MD.Pf")]
+colnames(Devel) <- c("Subject","Age","Family","Sex","Race","Site","Diagnosis",
+                  "eTIV",
+                  "L.Thalamus","L.AV","L.VA","L.VLa","L.VLP","L.VPL","L.Pul","L.LGN","L.MGN","L.CM","L.MD",
+                  "R.Thalamus","R.AV","R.VA","R.VLa","R.VLP","R.VPL","R.Pul","R.LGN","R.MGN","R.CM","R.MD")
+Devel$Race <- mapvalues(Devel$Race, c("White","Black or African American","More than one race","Unknown or not reported","American Indian/Alaska Native","Asian"),c("White","AA","Other","Other","Other","Other"))
+Devel$Age <- round(Devel$Age/12, digits=1)
+Devel$Project <- "Dev"
+Devel$Site <- mapvalues(Devel$Site, c("WashU","Harvard","UCLA","UMinn"), c("DWashU","DHarvard","DUCLA","DUMinn"))
+Devel$Dataset <- "HCP"
+
+## Aging
+HCP_Aging$Diagnosis <- "Normal Control"
+Aging <- HCP_Aging[,c("Subject","Age.in.months.at.the.time.of.the.interview.test.sampling.imaging.","Family_ID","Sex.of.subject.at.birth","Race.of.study.subject","Site","Diagnosis",
+                      "estimatedtotalintracranialvol",
+             "L.1.THALAMUS","L.2.AV","L.4.VA","L.5.VLa","L.6.VLP","L.7.VPL",
+             "L.8.Pul","L.9.LGN","L.10.MGN","L.11.CM","L.12.MD.Pf",
+             "R.1.THALAMUS","R.2.AV","R.4.VA","R.5.VLa","R.6.VLP","R.7.VPL",
+             "R.8.Pul","R.9.LGN","R.10.MGN","R.11.CM","R.12.MD.Pf")]
+colnames(Aging) <- c("Subject","Age","Family","Sex","Race","Site","Diagnosis",
+                  "eTIV",
+                  "L.Thalamus","L.AV","L.VA","L.VLa","L.VLP","L.VPL","L.Pul","L.LGN","L.MGN","L.CM","L.MD",
+                  "R.Thalamus","R.AV","R.VA","R.VLa","R.VLP","R.VPL","R.Pul","R.LGN","R.MGN","R.CM","R.MD")
+Aging$Race <- mapvalues(Aging$Race, c("White","Black or African American","More than one race","Unknown or not reported","American Indian/Alaska Native","Asian"),c("White","AA","Other","Other","Other","Other"))
+Aging$Age <- round(Aging$Age/12, digits=1)
+Aging$Project <- "Aging"
+Aging$Site <- mapvalues(Aging$Site, c("UMinn","WashU","UCLA","MGH"), c("AUMinn","AWashU","AUCLA","AMGH"))
+Aging$Dataset <- "HCP"
+
+## PSYXSEC
+PSYXSEC <- PSYXSEC_data[,c("Subject","Age","Family","Sex","Race","ScanType","Diagnosis",
+                           "eTIV",
+                           "L.Thal","L.AV","L.VA","L.VLa","L.VLp","L.VPL",
+             "L.Pul","L.LGN","L.MGN","L.CM","L.MD",
+             "R.Thal","R.AV","R.VA","R.VLa","R.VLp","R.VPL",
+             "R.Pul","R.LGN","R.MGN","R.CM","R.MD")]
+colnames(PSYXSEC) <- c("Subject","Age","Family","Sex","Race","Site","Diagnosis",
+                       "eTIV",
+             "L.Thalamus","L.AV","L.VA","L.VLa","L.VLP","L.VPL","L.Pul","L.LGN","L.MGN","L.CM","L.MD",
+             "R.Thalamus","R.AV","R.VA","R.VLa","R.VLP","R.VPL","R.Pul","R.LGN","R.MGN","R.CM","R.MD")
+PSYXSEC$Race <- mapvalues(PSYXSEC$Race, c("White","Black or African American","Other","American Indian or Alaskan Native","Asian"),c("White","AA","Other","Other","Other"))
+PSYXSEC$Site <- mapvalues(PSYXSEC$Site,c("T1_tr8_te4","T1_tr8_te4_REPEAT","T1_tr8_te4_short","T1_tr9_te5"),
+                          c("Scan1","Scan1","Scan2","Scan3"))
+PSYXSEC$Sex <- mapvalues(PSYXSEC$Sex,c("Female","Male"),c("F","M"))
+PSYXSEC$Project <- "PSYXSEC"
+PSYXSEC$Dataset <- "PSYXSEC"
+```
+
+```{r}
+## Combine three lists into one
+Combined <- rbind(YA,Devel,Aging,PSYXSEC)
+```
+
+```{r}
+write.csv(Combined,"HCP_PSYXSEC_Combined_220829.csv")
+```
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.

@@ -1,0 +1,430 @@
+---
+title: "Brain deviations in schizophrenia cohort"
+author: "Anna Huang"
+date: '2023-11-16'
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    toc_collapsed: true
+    code_folding: hide 
+    keep_md: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = '/Users/ashuang/Library/CloudStorage/OneDrive-VUMC/Work/05_OngoingProjects/Lifespan')
+#knitr::opts_knit$set(root.dir = 'C:/Users/ashua/OneDrive - VUMC/Work/05_OngoingProjects/Lifespan/')
+```
+
+```{r, echo=FALSE}
+library(table1)
+library(magrittr)
+library(dplyr)
+library(ggplot2)
+library(reshape2)
+library(patchwork)
+library(scales)
+library(rstatix)
+library(confintr)
+```
+
+# Summary
+
+In this project we are examining the centile results from GAMLSS models.
+
+# Data
+
+Loading in data about centiles so that we can do group comparions in the schizophrenia cohort.
+
+```{r}
+data = read.csv("KaidiReports/data_centiles_Oct20.csv")
+behavdata = read.csv("Data_Management/PSYXSEC/PSYXSECPhenoDataSCIPPANSS.csv")
+hcpbehav = read.csv("Data_Management/HCP_cognitive.csv")
+#data = read.csv("D:/OneDrive - VUMC/Work/Lifespan/KaidiReports/data_centiles_Sept27.csv")
+```
+
+
+```{r}
+# Subset data into the HCP dataset and PSYXSEC datasets
+data$dx_group = data$Diagnosis
+data$dx_group[data$Diagnosis != "Normal Control"] = "Schizophrenia Spectrum"
+data$dx_group <- as.factor(data$dx_group)
+hcp <- subset(data,Dataset == "HCP")
+psyxsec <- subset(data,Dataset == "PSYXSEC")
+Nucleus <- c("AV","AV","VA","VA","VL","VL","VPL","VPL",
+                  "Pul","Pul","LGN","LGN","MGN","MGN","CM","CM","MD","MD")
+Hemisphere <- c("Right","Left","Right","Left","Right","Left","Right","Left",
+                  "Right","Left","Right","Left","Right","Left","Right","Left","Right","Left")
+```
+
+# Comparing centile medians between groups
+
+Present the centile values in a table that includes the median centile values for SZ and HC, then compare group medians using the Wilcoxon Rank Sum test
+
+```{r}
+#### Right AV
+## plot SZ vs HC Centiles cores as density maps
+w.test <- data.frame(matrix(data=NA,nrow=18,ncol=9))
+colnames(w.test) <- c("Nucleus","Hemisphere","SZmed","HCmed","W","L.conf","H.conf","shift","pval")
+w.test$Nucleus <- Nucleus
+w.test$Hemisphere <- Hemisphere
+
+for (i in 1:18) {
+  variablename <- paste('centile_',substr(w.test$Hemisphere[i],1,1),'.',w.test$Nucleus[i],sep="")
+  SZ.med <- median(psyxsec[psyxsec$dx_group=="Schizophrenia Spectrum",variablename])
+  HC.med <- median(psyxsec[psyxsec$dx_group=="Normal Control",variablename])
+  test.results <- wilcox.test(psyxsec[,variablename]~psyxsec[,"dx_group"],conf.int=TRUE)
+  w.test[i,3] <- SZ.med
+  w.test[i,4] <- HC.med
+  w.test[i,"W"] <- test.results$statistic
+  w.test[i,"pval"] <- test.results$p.value
+  w.test[i,"L.conf"] <- test.results$conf.int[1]
+  w.test[i,"H.conf"] <- test.results$conf.int[2]
+  w.test[i,"shift"] <- test.results$estimate
+}
+
+w.test$fdr <- p.adjust(w.test[,"pval"], method="fdr")
+print(w.test)
+```
+
+# Calculating deviance status
+
+Identifying infra-normal and supra-normal individuals in the schizophrenia cohort.
+
+Infra-normal = lower than 5% of population
+Supra-normal = greater than 95% of population
+
+```{r}
+for (i in 1:18) {
+    infra <- as.numeric(psyxsec[,paste('centile_',substr(Hemisphere[i],1,1),'.',Nucleus[i], sep='')] < 0.05)
+    supra <- as.numeric(psyxsec[,paste('centile_',substr(Hemisphere[i],1,1),'.',Nucleus[i], sep='')] > 0.95)
+    centcat <- (infra*-1) + supra
+    psyxsec <- cbind(psyxsec,centcat)
+    colnames(psyxsec)[ncol(psyxsec)] <-
+      c(paste(Nucleus[i],'_',substr(Hemisphere[i],1,1),'.',"deviance",sep=""))
+  }
+
+#write.csv(psyxsec,"psyxsec.csv")
+```
+
+# Identify HC individuals falling within 90% of population
+
+Checking validity of normative models when applied to schizophrenia dataset. Here we identify the proportion of healthy individuals that fall within the middle 90% of the population. For a valid model, proportion should fall around .9.
+
+```{r}
+prop.hc <- data.frame(matrix(data=NA,nrow=18,ncol=4))
+colnames(prop.hc) <- c("Nucleus","Hemisphere","Schizophrenia","Healthy Controls")
+prop.hc$Nucleus <- Nucleus
+prop.hc$Hemisphere <- Hemisphere
+group.names <- c("Schizophrenia Spectrum","Normal Control")
+
+
+for (i in 1:18) {
+#  variablename <- paste('centile_',substr(w.test$Hemisphere[i],1,1),'.',w.test$Nucleus[i],sep="")
+  variablename <- paste(Nucleus[i],'_',substr(Hemisphere[i],1,1),'.',"deviance",sep="")
+  prop.hc[i,3] <- (sum(psyxsec[psyxsec$dx_group=="Schizophrenia Spectrum",variablename]==0)/234) * 100
+  prop.hc[i,4] <- (sum(psyxsec[psyxsec$dx_group=="Normal Control",variablename]==0)/211) * 100
+}
+
+print(prop.hc)
+```
+
+
+# Identifying proportion of infra- and supra-normal individuals in schizophrenia cohort
+
+Identify the proportions of individuals that fall outside 90% of the population, and then plot the proportions of infra-normal and supra-normal individuals in the healthy control and schizophrenia groups (Figure 3).
+
+```{r}
+prop.90 <- data.frame(matrix(data=NA,nrow=18,ncol=6))
+colnames(prop.90) <- c("Nucleus","Hemisphere","SZinfra","SZsupra","HCinfra","HCsupra")
+prop.90$Nucleus <- Nucleus
+prop.90$Hemisphere <- Hemisphere
+group.names <- c("Schizophrenia Spectrum","Normal Control")
+
+for (i in 1:18) {
+  variablename <- paste(Nucleus[i],'_',substr(Hemisphere[i],1,1),'.',"deviance",sep="")
+  prop.90[i,3] <- (sum(psyxsec[psyxsec$dx_group=="Schizophrenia Spectrum",variablename]==-1)/234) * 100
+  prop.90[i,4] <- (sum(psyxsec[psyxsec$dx_group=="Schizophrenia Spectrum",variablename]==1)/234) * 100
+  prop.90[i,5] <- (sum(psyxsec[psyxsec$dx_group=="Normal Control",variablename]==-1)/211) * 100
+  prop.90[i,6] <- (sum(psyxsec[psyxsec$dx_group=="Normal Control",variablename]==1)/211) * 100
+}
+
+print(prop.90)
+
+infra.long <- melt(prop.90, id = c("Nucleus","Hemisphere"), 
+                  measure = c("SZinfra","HCinfra"), 
+                  variable.name = "Group",
+                  value.name = "Infra")
+
+infra.long$Group <- gsub("SZinfra","SZ",infra.long$Group)
+infra.long$Group <- gsub("HCinfra","HC",infra.long$Group)
+
+supra.long <- melt(prop.90, id = c("Nucleus","Hemisphere"), 
+                  measure = c("SZsupra","HCsupra"), 
+                  variable.name = "Group",
+                  value.name = "Supra")
+
+supra.long$Group <- gsub("SZsupra","SZ",supra.long$Group)
+supra.long$Group <- gsub("HCsupra","HC",supra.long$Group)
+
+all.long <- merge(x = infra.long, y = supra.long, by.x = c("Nucleus","Hemisphere","Group"), by.y = c("Nucleus","Hemisphere","Group"))
+
+rm(infra.long,supra.long)
+```
+
+```{r  fig1,dev='png',dpi=300}
+
+p5.inf <- ggplot(data=all.long, aes(x=Nucleus,y=Infra,fill=Group)) + facet_wrap(~ Hemisphere)
+p5.sup <- ggplot(data=all.long, aes(x=Nucleus,y=Supra,fill=Group)) + facet_wrap(~ Hemisphere)
+
+
+
+p5.infplot <- p5.inf + geom_bar(stat="identity",position=position_dodge()) + ggtitle('Infra-normal') +
+  geom_hline(yintercept=5, linetype="dashed", color = "black") +
+ theme(axis.text.x = element_text(angle = 90, size=14,face="bold"), 
+        text = element_text(size = 14,face="bold"),
+        axis.line = element_line(colour="black"),
+        panel.background = element_blank(),
+        plot.title = element_text(size = 16, face = "bold")) +
+  labs(y="Percentage (%)",x="") + 
+  scale_fill_manual(breaks=c("HC","SZ"),values=c("#00BFC4","#F8766D")) +
+  ylim(0,30)
+
+p5.supplot <- p5.sup + geom_bar(stat="identity",position=position_dodge()) + ggtitle('Supra-normal') +
+    geom_hline(yintercept=5, linetype="dashed", color = "black") +
+  theme(axis.text.x = element_text(angle = 90, size=14,face="bold"), 
+        text = element_text(size = 14,face="bold"),
+        axis.line = element_line(colour="black"),
+        panel.background = element_blank(),
+        plot.title = element_text(size = 16, face = "bold")) + 
+    labs(y="Percentage (%)",x="Thalamic Nucleus") + 
+  scale_fill_manual(breaks=c("HC","SZ"),values=c("#00BFC4","#F8766D")) + 
+  ylim(0,30)
+
+patchwork <- p5.infplot + p5.supplot + plot_layout(nrow=2) 
+fig3ab <- patchwork + plot_annotation(tag_levels = 'A')
+fig3ab
+ggsave(file="Figure3.eps",fig3ab)
+```
+
+
+# Comparing deviances between groups
+
+Calculating differences in the proportion of infra-, normal and supra-normal indivivudals in the schizophrenia and healthy control groups for each thalamic nucleus. 
+
+```{r}
+centileX <- data.frame(matrix(data=NA,nrow=18,ncol=7))
+colnames(centileX) <- c("Nucleus","SZinfra","SZnorm","SZsupra","HCinfra","HCnorm","HCsupra")
+centileX$Nucleus <- Nucleus
+centileX$Hemisphere <- Hemisphere
+group.names <- c("Schizophrenia Spectrum","Normal Control")
+
+
+for (i in 1:18) {
+  variablename <- paste(Nucleus[i],'_',substr(Hemisphere[i],1,1),'.',"deviance",sep="")
+  centileX[i,2] <- sum(psyxsec[psyxsec$dx_group=="Schizophrenia Spectrum",variablename]==-1)
+  centileX[i,3] <- sum(psyxsec[psyxsec$dx_group=="Schizophrenia Spectrum",variablename]==0)
+  centileX[i,4] <- sum(psyxsec[psyxsec$dx_group=="Schizophrenia Spectrum",variablename]==1)
+  centileX[i,5] <- sum(psyxsec[psyxsec$dx_group=="Normal Control",variablename]==-1)
+  centileX[i,6] <- sum(psyxsec[psyxsec$dx_group=="Normal Control",variablename]==0)
+  centileX[i,7] <- sum(psyxsec[psyxsec$dx_group=="Normal Control",variablename]==1)
+  rm(variablename)
+}
+
+for (i in 1:18) {
+  SZdata <- centileX[i,2:4]
+  colnames(SZdata) <- c("infra","norm","supra")
+  HCdata <- centileX[i,5:7]
+  colnames(HCdata) <- c("infra","norm","supra")
+  testdata <- rbind(SZdata,HCdata)
+  rownames(testdata) <- c("SZ","HC")
+  chisq <- chisq.test(testdata)
+  #cramv <- cramersv(chisq)
+  centileX[i,"Chisq"] = chisq$statistic
+  centileX[i,"pval"]=chisq$p.value
+  centileX[i,"cramv"]=cramersv(chisq)
+}
+
+centileX$fdr <- p.adjust(centileX[,"pval"], method="fdr")
+print(centileX)
+```
+
+
+# Associations with Cognition
+
+Calculating the association between SCIP composite score (cognition) and deviance scores (centiles) amd raw volumes (standardized for age, sex, race and eTIV)
+
+```{r}
+# Create function for calcuating correlations for centiles and standardized raw scores
+table_rho <- function(y,Nucleus,Hemisphere, dataset = data) {
+  #Setup function to calculate correlations
+  corr <- data.frame(matrix(data=NA,nrow=18,ncol=6))
+  colnames(corr) <- c("Nucleus","Hemisphere","centile_rho","centile_p","raw_rho","raw_p")
+  corr$Nucleus <- Nucleus
+  corr$Hemisphere <- Hemisphere
+  
+  #  corr$Nucleus <- c("AV","AV","VA","VA","VL","VL","VPL","VPL",
+#                  "Pul","Pul","LGN","LGN","MGN","MGN","CM","CM","MD","MD")
+#  corr$Hemisphere <- c("Right","Left","Right","Left","Right","Left","Right","Left",
+#                  "Right","Left","Right","Left","Right","Left","Right","Left","Right","Left")
+
+  for (i in 1:18) {
+    centnuc <- paste("centile_",substr(corr$Hemisphere[i],1,1),'.',corr$Nucleus[i],sep="")
+    resnuc <- paste("res_",substr(corr$Hemisphere[i],1,1),".",corr$Nucleus[i],sep="")
+    centile = cor.test(dataset[,centnuc],dataset[,y], use = "pairwise.complete.obs",method="spearman",exact=FALSE)
+    raw = cor.test(dataset[,resnuc],dataset[,y], use = "pairwise.complete.obs", method="spearman",exact=FALSE)
+    corr[i,3] <- centile$estimate
+    corr[i,4] <- centile$p.value
+    corr[i,5] <- raw$estimate
+    corr[i,6] <- raw$p.value
+  }
+  
+  corr$centile_fdr <- p.adjust(corr[,"centile_p"], method="fdr")
+  corr$raw_fdr <- p.adjust(corr[,"raw_p"], method = "fdr")
+  
+  return(corr)
+}  
+```
+
+
+```{r}
+draw_rho <- function(name,corr=corr_f) {
+  rho.long <- melt(corr, id = c("Nucleus","Hemisphere"), 
+                  measure = c("centile_rho","raw_rho"), 
+                  variable.name = "Type",
+                  value.name = "Rho")
+  rho.long$Type <- gsub("centile_rho","Centiles",rho.long$Type)
+  rho.long$Type <- gsub("raw_rho","Std Vols",rho.long$Type)
+
+  pval.long <- melt(corr, id = c("Nucleus","Hemisphere"), 
+                  measure = c("centile_fdr","raw_fdr"), 
+                  variable.name = "Type",
+                  value.name = "pvalue")
+  label(pval.long[["pvalue"]]) <- "P-value"
+  pval.long$Type <- gsub("centile_fdr","Centiles",pval.long$Type)
+  pval.long$Type <- gsub("raw_fdr","Std Vols",pval.long$Type)
+
+  corr.long <- merge(x = rho.long, y = pval.long, 
+                     by.x = c("Nucleus","Hemisphere","Type"), by.y = c("Nucleus","Hemisphere","Type"))
+
+# Heatmap for Rho 
+ corr.plot <- ggplot(corr.long, aes(Nucleus, Type, fill= pvalue)) + 
+   geom_tile() + 
+   geom_text(aes(Nucleus,Type, label = round(Rho,3)), size=4) + 
+   facet_wrap(~Hemisphere, nrow=2) +
+   ggtitle(paste(name)) +
+   scale_fill_gradientn(colours=c("white","yellow","orange","red"),limits=c(0,1)) +
+#                       , values=rescale(c(-1,0-.Machine$double.eps,0,0+.Machine$double.eps,1)),limits=c(0,1)) +
+    theme(
+      panel.grid.major = element_blank(),panel.grid.minor = element_blank(), panel.background = element_blank(),
+   #   axis.text = element_text(face="bold"),
+      axis.title.x = element_blank(),
+      axis.title.y = element_blank(),
+      text = element_text(size = 14,face="bold"),
+      axis.text.x = element_text(angle = 90, size=14, face="bold"),
+      axis.text.y = element_text(color = "black", size = 14, face = "bold"),
+      plot.title = element_text(size = 16, face = "bold")
+    #  axis.text.y = element_text(angle = 90, hjust = 1)
+      ) +
+  coord_fixed() + labs(fill="p-values")
+ 
+  return(corr.plot)
+}
+
+```
+
+```{r}
+# Merge centile values with cognitive measures
+psyxsecBEH <- merge(x = psyxsec, y = behavdata, by.x = "Subject", by.y = "XNAT.Subject.ID")
+
+label(psyxsecBEH$Positive.Sub.Scale) <- "PANSS Positive"
+label(psyxsecBEH$Negative.Sub.Scale) <- "PANSS Negative"
+label(psyxsecBEH$General.Sub.Scale) <- "PANSS General"
+label(psyxsecBEH$Total.Z.Score) <- "SCIP Total Score"
+
+for (i in 1:18) {
+  nucname <- paste("n",substr(Hemisphere[i],1,1),'.',Nucleus[i],sep="")
+  resname <- paste("res_",substr(Hemisphere[i],1,1),'.',Nucleus[i],sep="")
+  tp <- lm(eval(as.name(nucname)) ~ Age + Race + Sex + neTIV, data = psyxsecBEH)
+  psyxsecBEH[,resname] <- rstandard(tp)
+}
+
+psyxsecBEH.SZ <- psyxsecBEH[psyxsecBEH$dx_group=="Schizophrenia Spectrum",]
+psyxsecBEH.HC <- psyxsecBEH[psyxsecBEH$dx_group=="Normal Control",]
+
+psyxsecBEH$Sex <- dplyr::recode(psyxsecBEH$Sex,
+                                "F" = "Female",
+                                "M" = "Male")
+```
+
+## Plotting correlation schores
+
+```{r}
+my.render.cont <- function(x) {
+  with(stats.apply.rounding(stats.default(x), digits=4), c("",
+                                                           "Mean (SD)"=sprintf("%s (&plusmn;%s)", MEAN, SD)))
+}
+
+my.render.cat <- function(x) {
+  c("", sapply(stats.default(x), function(y) with(y, sprintf("%d (%0.0f %%)", FREQ, PCT))))
+}
+
+table1(~ Age + Sex + Race + Total.Z.Score | dx_group, data = psyxsecBEH, render.continuous = my.render.cont, render.categorical=my.render.cat)
+```
+
+Spearman Rho correlation with cognition using centiles and standardized (corrected for covariates) raw volumes.
+
+```{r fig2, fig.width = 7,  fig.height=8, dev='png',dpi=300}
+sz.corr = table_rho("Total.Z.Score",Nucleus,Hemisphere,dataset=psyxsecBEH.SZ)
+sz.plot <- draw_rho("Schizophrenia Group",corr=sz.corr)
+
+sz.corr
+sz.plot
+
+ggsave(file="Figure4.svg",sz.plot,width=7,height=4.5,units="in",dpi=600)
+```
+
+# Supplemental: Age distribution figures
+
+Age distributions comparing HCP and schizophrenia datasets.
+
+```{r}
+data$Dataset <- factor(data$Dataset, levels=c("HCP","PSYXSEC"), 
+                       labels=c("HCP Lifespan","Schizophrenia Cohort"))
+
+allagehist <- ggplot(data,aes(x=Age, color=Dataset,fill=Dataset)) + 
+  geom_histogram(alpha=.2,binwidth=3) +
+  geom_density(aes(y=after_stat(count*3)),alpha=.25) +
+  theme_classic() + 
+  ylab("Number of Scans") + ylim(c(0,300)) +
+  scale_fill_manual(breaks=c("HCP Lifespan","Schizophrenia Cohort"),values=c("grey","#FF0000")) +
+  scale_color_manual(breaks=c("HCP Lifespan","Schizophrenia Cohort"),values=c("grey","#FF0000"))
+
+
+# show on page
+allagehist
+
+# Print on page and save as eps file
+ggsave("agedist_dataset.eps",allagehist,dpi=300)
+```
+
+Age distributions between diagnoses in psychosis cohort.
+```{r}
+psyagehist <- ggplot(psyxsec,aes(x=Age,color=dx_group,fill=dx_group)) +
+  geom_histogram(alpha=.2,binwidth=2) +
+  geom_density(aes(y=after_stat(count*2)),alpha=.25) +
+  theme_classic() + 
+  ylab("Number of Scans") + ylim(c(0,80)) +
+  guides(fill=guide_legend(title="Diagnosis"),color=guide_legend(title="Diagnosis")) + 
+  scale_fill_manual(breaks=c("Normal Control",
+                             "Schizophrenia Spectrum"),values=c("#00BFC4","#F8766D")) +
+  scale_color_manual(breaks=c("Normal Control",
+                             "Schizophrenia Spectrum"),values=c("#00BFC4","#F8766D"))
+
+# show on page
+psyagehist
+
+# save as eps file
+ggsave("agedist_diagnosis.eps",psyagehist,dpi=300)
+```

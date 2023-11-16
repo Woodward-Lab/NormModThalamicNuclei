@@ -1,0 +1,403 @@
+---
+title: "Analysis report: the association between cognition and thalamus volume given age"
+author: "Kaidi Kang"
+date: "April 2023"
+output:     
+  bookdown::html_document2:
+      toc: true
+      number_sections: true
+      fig_caption: TRUE
+      toc_float: 
+        collapsed: false
+      code_folding: hide
+      keep_md: yes
+
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, message = FALSE, warning = FALSE}
+library(dplyr)
+library(magrittr)
+library(table1)
+library(geepack)
+# devtools::install_github("statimagcoll/RESI", ref = "master", force = TRUE)
+
+library(RESI)
+library(splines)
+library(multcomp)
+library(ggplot2)
+library(pbmcapply)
+library(emmeans)
+library(patchwork)
+```
+
+
+# Aim
+To nonlinearly quantify how the association between cognition (outcome variable) and thalamus volume (independent variable) varies over different stages in human lifespan. 
+
+# Data
+```{r}
+#dat = readr::read_csv("C:/Users/ashua/OneDrive - VUMC/Work/05_OngoingProjects/Lifespan/KaidiReports/HCP_InclCognitiveData_hemispheres.csv")
+dat = readr::read_csv("/Users/ashuang/Library/CloudStorage/OneDrive-VUMC/Work/05_OngoingProjects/Lifespan/KaidiReports/HCP_InclCognitiveData_hemispheresREM.csv")
+#dat = readr::read_csv("~/collaborations/Anna_cogn_thalamus_age/HCP_InclCognitiveData_hemispheres.csv")
+dat = dat[!duplicated(dat), ]
+dat = dat[order(dat$Family),]
+# recode Family ID -- geeglm function can only take numeric ID (and the data need to be sorted by ID)
+dat %<>% group_by(Family) %>% mutate(family_id = cur_group_id(), family_size = length(family_id))
+dat = dat[order(dat$family_id),]
+dat %<>% as.data.frame
+
+# creating age stages
+# 1) 5~21 yrs; 2) 21 ~ 35 yrs; 3) 35+ yrs
+dat$age_grp = NA
+dat$age_grp[dat$Project=="Development"] = 0
+dat$age_grp[dat$Project=="Young Adult"] = 1
+dat$age_grp[dat$Project=="Aging"] = 2
+dat$age_grp %<>% factor(labels = c("5 ~ 21 yrs", "21 ~ 35 yrs", "35+ yrs"))
+dat$age_grp %<>% factor()
+label(dat$age_grp) = "Age Group"
+
+dat$age_grp_1 = ifelse(dat$age_grp == "5 ~ 21 yrs", 1, 0)
+dat$age_grp_2 = ifelse(dat$age_grp == "21 ~ 35 yrs", 1, 0)
+dat$age_grp_3 = ifelse(dat$age_grp == "35+ yrs", 1, 0)
+
+# dat$age_grp_1 = ifelse(dat$age_grp == 0, 1, 0)
+# dat$age_grp_2 = ifelse(dat$age_grp == 1, 1, 0)
+# dat$age_grp_3 = ifelse(dat$age_grp == 2, 1, 0)
+```
+
+
+**Notes: **
+
++ Subject `HCD0244230` has two duplicated records. Cleaned.
+
++ This is a cross-sectional data containing `r nrow(dat)` subjects
+
+
+```{r}
+table1( ~ Age + Sex + Race + Site + Project + neTIV + exec + nL.AV + nR.AV + nL.VA + nR.VA + nL.VL + nR.VL + nL.VPL + nR.VPL + nL.Pul + nR.Pul + nL.LGN + nR.LGN + nL.MGN + nR.MGN + nL.CM + nR.CM + nL.MD + nR.MD | age_grp, data = dat)
+```
+
+
+```{r}
+# # age
+# 
+# hist(dat$Age)
+# quantile(dat$Age)
+# hist(dat$exec)
+# 
+# # visualize the 3-D (age, cognition, volume)
+```
+
+
+# Statistical analysis
+
+## GEE models
+Considering the existence of correlation between the subjects from the same family, GEE model is used to quantify the effect of the volume of each thalamus region (actually the mean volume of the two hemishperes) on cognitive performance after controlling for sex.
+
++ exchangeable correlation structure is specified as the working structure in the GEEs.
++ natural splines with 3 knots were added to age variable to capture the association nonlinearly
++ Interaction terms between age and cognition are added to quantify the change of the association given age 
++ the slope of the volume (and the confidence interval) will be calculated at each given age to describe how the (linear) effect on cogntiion will change over age. 
+
+$$
+\mathrm{cognition} \sim \mathrm{ volume + sex + volume*I(AgeGroup = 1) + volume*I(AgeGroup = 2) + volume*I(AgeGroup = 3)}  
+$$
+
+```{r}
+boot.samp <- function(data, id.var = NULL) {
+  params = as.list(match.call()[-1])
+  if (is.matrix(data)) data = as.data.frame(data)
+  if (is.null(id.var)) {
+    boot.ind = sample(1:nrow(data), replace = TRUE)
+    boot.data = data[boot.ind, ]
+  } else {
+    boot.ind = sample(unique(data[, id.var]), replace = TRUE)
+    boot.data = data[unlist(lapply(boot.ind, function(x) which(x == data[, id.var]))), ]
+    boot.data$bootid = rep(1:length(unique(data[, id.var])),
+                           unlist(lapply(boot.ind, function(x) length(which(x==data[,id.var])))))
+  }
+  return(boot.data)
+}
+```
+
+
+
+```{r}
+# function for model fitting 
+# x = "nL.AV"
+# data = dat
+# num_cores = 10
+# r = 100
+# digits = 3
+
+fit_func = function(data, x, r = 1000, num_cores = 20, digits = 3,xlim=c(100,700),title="") {
+  
+  emm_options(opt.digits = FALSE)
+  
+  data = data[order(data$Family), ]
+  
+  # formula
+  # form = paste0(" exec ~ age_grp + Sex + ", 
+  #               x, ":age_grp_1 + ", 
+  #               x, ":age_grp_2 + ", 
+  #               x, ":age_grp_3") %>% as.formula
+  form = paste0(" exec ~ age_grp + Sex + I(neTIV/10000) + ", 
+                x, ":age_grp") %>% as.formula
+  
+  ## model fit with age groups
+  gee_fit = geeglm(form, data = data, id = family_id, corstr = "exchangeable")
+  resi_obj = gee_fit %>% resi_pe()
+  
+  ## with continous age variable
+  form_cont = paste0(" exec ~ Sex + I(neTIV/10000) + ns(Age, 3) +", x, "+", x,":ns(Age, 3)") %>% as.formula
+  gee_fit_cont = geeglm(form_cont, data = data, id = family_id, corstr = "exchangeable")
+  
+  emt_cont = emmeans::emtrends(gee_fit_cont, ~ Age, var = x,
+                              at = list(Age = c(seq(5, 100, by = 0.1)))
+                             )
+  
+  
+  ## adding CI
+  boot = pbmcapply::pbmclapply(1:r, function(sim){
+            boot_data = boot.samp(data = data, id.var = 'family_id')
+            boot_fit = geeglm(form, data = boot_data, id = bootid, corstr = "exchangeable")
+            boot_resi = boot_fit %>% resi_pe()
+            return(boot_resi$coefficients$`L-RESI`)
+            }, mc.cores = num_cores
+          )
+  boot_val = do.call(rbind, boot) %>% t
+  boot_CI = apply(boot_val, 1, quantile, probs = c(0.025, 0.975)) %>% t
+  colnames(boot_CI) = c("L 2.5%", "L 97.5%")
+  resi_obj = cbind(resi_obj$coefficients, boot_CI)
+
+  # cat("Model Result: \n")
+  # print(resi_obj)
+
+
+  # plot: continous slope over age
+    plot_data = summary(emt_cont)
+  
+    p_slope = ggplot(data = plot_data, aes_string(x = "Age", y = paste0(x, ".trend"))) + geom_line(linewidth = 1, color = "blue") + 
+    geom_ribbon(aes(ymin = asymp.LCL , ymax = asymp.UCL), fill = "lightblue", alpha = 0.3) +
+    geom_hline(yintercept = 0, linetype="dashed") + labs(title = x, x = "Age", y = "Slope of volume") +
+    theme_bw()
+    
+  # plot: slope in each age group
+    obj = summary(gee_fit)
+    plot_data = data.frame(age_grp = c("5 ~ 21 yrs", "21 ~ 35 yrs", "35+ yrs"),
+                           slope = obj$coefficients$Estimate[6:8],
+                           slope_ll = obj$coefficients$Estimate[6:8] - 1.96 * obj$coefficients$Std.err[6:8],
+                           slope_ul = obj$coefficients$Estimate[6:8] + 1.96 * obj$coefficients$Std.err[6:8]
+    )
+    
+    plot_data$age_grp %<>% factor(level =  c("5 ~ 21 yrs", "21 ~ 35 yrs", "35+ yrs"))
+    
+    p_slope_age_grp = ggplot(data = plot_data, aes(y = slope, x = age_grp, ymin = slope_ll, ymax = slope_ul)) +
+      geom_point(size = 3) + geom_linerange(linewidth = 0.8 ) + xlab("") + ylab("Slope Estimate") + geom_hline(yintercept = 0, linetype="dashed") + theme_bw() +  scale_x_discrete(labels=c("5 ~ 21 yrs" = "Developmental", "21 ~ 35 yrs" = "Young Adults","35+ yrs" = "Aging")) + ylim(-.07,.15) + ggtitle(title) + theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
+  
+  
+  # plot: RESI
+   plot_data = data.frame(age_grp = c("5 ~ 21 yrs", "21 ~ 35 yrs", "35+ yrs"),
+                           RESI = c(resi_obj[paste0("age_grp5 ~ 21 yrs:", x), 'L-RESI'], resi_obj[paste0("age_grp21 ~ 35 yrs:", x), 'L-RESI'], resi_obj[paste0("age_grp35+ yrs:", x), 'L-RESI']) %>% round(digits),
+                           RESI_ll = c(resi_obj[paste0("age_grp5 ~ 21 yrs:", x), 'L 2.5%'], resi_obj[paste0("age_grp21 ~ 35 yrs:", x), 'L 2.5%'], resi_obj[paste0("age_grp35+ yrs:", x), 'L 2.5%']) %>% round(digits),
+                           RESI_ul = c(resi_obj[paste0("age_grp5 ~ 21 yrs:", x), 'L 97.5%'], resi_obj[paste0("age_grp21 ~ 35 yrs:", x), 'L 97.5%'], resi_obj[paste0("age_grp35+ yrs:", x), 'L 97.5%']) %>% round(digits)
+                           )
+    plot_data$age_grp %<>% factor(level =  c("5 ~ 21 yrs", "21 ~ 35 yrs", "35+ yrs"))
+      
+    p_resi = ggplot(data = plot_data, aes(y = RESI, x = age_grp, ymin = RESI_ll, ymax = RESI_ul)) +
+      geom_point(size = 3) + geom_linerange(linewidth = 0.8 ) + xlab("Age") + geom_hline(yintercept = 0, linetype="dashed") + theme_bw() + scale_x_discrete(labels=c("5 ~ 21 yrs" = "Developmental", "21 ~ 35 yrs" = "Young Adults","35+ yrs" = "Aging")) + ggtitle(title)
+    
+    # scatter plots with model-based curves
+    grid_val = list(x = seq(min(data[, x]), max(data[, x]), by = 1))
+    names(grid_val) = x
+    emm_options(opt.digits = FALSE)
+    emm_obj = emmeans::emmeans(gee_fit, as.formula(paste0("~", x)), by = "age_grp",
+                              at = grid_val
+                             )
+    line_dat = summary(emm_obj) 
+    
+    xbreak = round((xlim[2]-xlim[1])/3)
+    
+    # age group 1
+    point_sub_dat_1 = subset(data, age_grp == "5 ~ 21 yrs")
+    line_sub_dat_1 = subset(line_dat, age_grp == "5 ~ 21 yrs")
+    
+    p_age_1 = ggplot() + geom_point(data = point_sub_dat_1, aes(y = exec, x = point_sub_dat_1[,x]), alpha = 0.3, alpha = 0.3,shape=1,size=1) + 
+      geom_line(data = line_sub_dat_1, aes(x = line_sub_dat_1[, x], y = emmean), linewidth = 1, color = "blue") +
+      geom_ribbon(data = line_sub_dat_1, aes(x = line_sub_dat_1[, x], ymin = asymp.LCL, ymax = asymp.UCL), fill = "lightblue", alpha = 0.3) +  
+      theme_classic() + 
+      xlab("") + ylab("") + ggtitle("") +
+          scale_y_continuous(limits=c(60,140),breaks=c(60,100,140)) + 
+    scale_x_continuous(limits=xlim,breaks=c(xlim[1],xlim[1]+xbreak,xlim[1]+2*xbreak,xlim[2])) +
+      theme(axis.title.x=element_blank(),axis.title.y=element_blank())
+    
+    # age group 2
+    point_sub_dat_2 = subset(data, age_grp == "21 ~ 35 yrs")
+    line_sub_dat_2 = subset(line_dat, age_grp == "21 ~ 35 yrs")
+    
+    p_age_2 = ggplot() + geom_point(data = point_sub_dat_2, aes(y = exec, x = point_sub_dat_2[,x]), alpha = 0.3, alpha = 0.3,shape=1,size=1) + 
+      geom_line(data = line_sub_dat_2, aes(x = line_sub_dat_2[, x], y = emmean), linewidth = 1, color = "blue") +
+      geom_ribbon(data = line_sub_dat_2, aes(x = line_sub_dat_2[, x], ymin = asymp.LCL, ymax = asymp.UCL), fill = "lightblue", alpha = 0.3) +  
+      theme_classic() + 
+      xlab("") + ylab("") + ggtitle("") +
+          scale_y_continuous(limits=c(60,140),breaks=c(60,100,140)) + 
+    scale_x_continuous(limits=xlim,breaks=c(xlim[1],xlim[1]+xbreak,xlim[1]+2*xbreak,xlim[2])) +
+      theme(axis.title.x=element_blank(),axis.title.y=element_blank())
+    
+    # age group 3
+    point_sub_dat_3 = subset(data, age_grp == "35+ yrs")
+    line_sub_dat_3 = subset(line_dat, age_grp == "35+ yrs")
+    
+    p_age_3 = ggplot() + geom_point(data = point_sub_dat_3, aes(y = exec, x = point_sub_dat_3[,x]), alpha = 0.3,shape=1,size=1) + 
+      geom_line(data = line_sub_dat_3, aes(x = line_sub_dat_3[, x], y = emmean), linewidth = 1, color = "blue") +
+      geom_ribbon(data = line_sub_dat_3, aes(x = line_sub_dat_3[, x], ymin = asymp.LCL, ymax = asymp.UCL), fill = "lightblue", alpha = 0.3) +  
+      theme_classic() + 
+      xlab("") + ylab("") + ggtitle("") +
+          scale_y_continuous(limits=c(60,140),breaks=c(60,100,140)) + 
+    scale_x_continuous(limits=xlim,breaks=c(xlim[1],xlim[1]+xbreak,xlim[1]+2*xbreak,xlim[2])) +
+      theme(axis.title.x=element_blank(),axis.title.y=element_blank())
+    
+
+  p_age = cowplot::plot_grid(p_age_1, p_age_2, p_age_3, nrow = 1)
+  p = cowplot::plot_grid(p_age, p_resi, p_slope_age_grp, p_slope, nrow = 4, rel_heights = c(1, 2, 2, 2))
+
+  # Multiple comparisons
+  C = rbind('5~21 vs 21~35' = c(0, 0, 0, 0, 0, 1, -1, 0),
+            '5~21 vs 35+'   = c(0, 0, 0, 0, 0, 1, 0, -1),
+            '21~35 vs 35+'  = c(0, 0, 0, 0, 0, 0, 1, -1))
+  mc = glht(gee_fit, linfct = C, alternative = "two.sided") %>% summary(test = univariate())
+
+  return(list(gee_fit = gee_fit,
+              resi_obj = resi_obj %>% round(digits),
+              p_age_1 = p_age_1,
+              p_age_2 = p_age_2,
+              p_age_3 = p_age_3,
+              p_slope_age_grp = p_slope_age_grp,
+              slopeplot = p_slope_age_grp,
+              p_resi = p_resi,
+              plot = p,
+              plot_data = plot_data,
+              multicomp = mc))
+}
+
+```
+
+
+# Results
+
+```{r}
+set.seed(2023)
+```
+
+
+## AV
+
+**Left AV:**
+
+```{r, fig.height=12, fig.width=7}
+lav.obj = fit_func(data = dat, x = "nL.AV", xlim=c(70,250),title="Left Anteroventral") %>% suppressWarnings()
+lav.obj$resi_obj 
+lav.obj$plot
+lav.obj$multicomp
+```
+
+**Interpretations:**
+
++ The first row of plots show the (crude/unadjusted) scatter plot between the volume and cognition level in different age groups with model-based curve. For example, the blue line in the plot for "5 ~ 21 yrs old" group is the marginal line based on the model after averaging over the variable sex and neTIV.
+
++ The plot on the second row shows the effects of volume on the cognition level in different age groups after controlling for sex and neTIV. There is a negative effect of the volume of left AV region on the cognition level after controlling for sex in the age group of 5 to 21 years, but we don't have sufficient statistical evidence to conclude the existence of such effect (as the confidence interval includes 0). In the age groups of 21 to 35, and 35 and above, there are positive effects.
+
++ The plot on the third row shows the slope estimates of volume in different age groups after controlling for sex and neTIV. 
+
++ The last plots shows how the marginal slope estimate (and its confident interval) of volume change over age (after controlling for sex and neTIV), which was derived using the model including continuous age instead of age groups. There is a negative association between the volume and cognition before ~15 years old. The most significant effect exists between the age of 20 ~ 35 years old.  
+
+
+**Right AV:**
+
+```{r, fig.height=12, fig.width=7}
+rav.obj = fit_func(data = dat, x = "nR.AV", xlim=c(70,250),title="Right Anteroventral") %>% suppressWarnings()
+rav.obj$resi_obj
+rav.obj$plot
+rav.obj$multicomp
+
+```
+
+## Pul
+
+**Left Pul:**
+
+```{r, fig.height=12, fig.width=7}
+lpu.obj = fit_func(data = dat, x = "nL.Pul", xlim=c(680,2000), title="Left Pulvinar") %>% suppressWarnings()
+lpu.obj$resi_obj 
+lpu.obj$plot
+lpu.obj$multicomp
+```
+
+
+**Right Pul:**
+
+```{r, fig.height=12, fig.width=7}
+rpu.obj = fit_func(data = dat, x = "nR.Pul", xlim=c(680,2000),title="Right Pulvinar") %>% suppressWarnings()
+rpu.obj$resi_obj
+rpu.obj$plot
+rpu.obj$multicomp
+```
+
+## MD
+
+**Left MD:**
+
+```{r, fig.height=12, fig.width=7}
+lmd.obj = fit_func(data = dat, x = "nL.MD", xlim=c(240,770),title="Left Mediodorsal") %>% suppressWarnings()
+lmd.obj$resi_obj
+lmd.obj$plot
+lmd.obj$multicomp
+```
+
+
+**Right MD:**
+
+```{r, fig.height=12, fig.width=7}
+rmd.obj = fit_func(data = dat, x = "nR.MD", xlim=c(240,770),title="Right Mediodorsal") %>% suppressWarnings()
+rmd.obj$resi_obj
+rmd.obj$plot
+rmd.obj$multicomp
+```
+
+## Patchwork figure
+
+**Left combined figure:**
+
+```{r, comb_left,fig.height=5, fig.width=6, dev='png',dpi=300}
+L.patchwork <- lmd.obj$p_age_1 + lmd.obj$p_age_2 + lmd.obj$p_age_3 + 
+  lpu.obj$p_age_1 + lpu.obj$p_age_2 + lpu.obj$p_age_3 + 
+  lav.obj$p_age_1 + lav.obj$p_age_2 + lav.obj$p_age_3 + plot_layout(nrow=3,ncol=3)
+L.patchwork
+```
+
+**Right combined figure:**
+
+```{r, comb_right, fig.height=5, fig.width=6, dev='png',dpi=300}
+R.patchwork <- rmd.obj$p_age_1 + rmd.obj$p_age_2 + rmd.obj$p_age_3 + 
+  rpu.obj$p_age_1 + rpu.obj$p_age_2 + rpu.obj$p_age_3 + 
+  rav.obj$p_age_1 + rav.obj$p_age_2 + rav.obj$p_age_3 + plot_layout(nrow=3,ncol=3)
+R.patchwork
+```
+
+**Left Slope Figure**
+
+```{r, slope_left, dev="png", dpi=300}
+L.slope <- lmd.obj$slopeplot + lpu.obj$slopeplot + lav.obj$slopeplot + plot_layout(ncol=3)
+L.slope + plot_annotation(tag_levels = 'A')
+```
+
+**Right Slope Figure**
+
+```{r, slope_right, dev="png", dpi=300}
+R.slope <- rmd.obj$slopeplot + rpu.obj$slopeplot + rav.obj$slopeplot + plot_layout(ncol=3)
+R.slope + plot_annotation(tag_levels = 'A')
+```

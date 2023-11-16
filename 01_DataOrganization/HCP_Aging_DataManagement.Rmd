@@ -1,0 +1,73 @@
+---
+title: "HCP_Aging_DataSummary"
+author: "Anna Huang"
+date: "1/28/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = 'D:/OneDrive - VUMC/Work/HCP/Data_Management/')
+```
+
+This document details the Human Connectome Project Developmental sample. 
+
+```{r, echo = FALSE}
+library(readxl)
+behavdata <- read_xlsx("HCP_Aging/HCP_Aging_ndar_subject.xlsx")
+FSQA <- read_xlsx("HCP_Aging/HCP_A_FS_QA.xlsx","Sheet2")
+ThomQA <- read_xlsx("HCP_Aging/HCP_A_Thomas_QA.xlsx","Sheet1")
+thalvol <- read_xlsx("HCP_Aging/HCP_Aging_ThalVols.xlsx")
+FSetiv <- read_xlsx("HCP_Aging/HCP_A_FSeTIV.xlsx")
+eTIV <- FSetiv[,c("Subject","estimatedtotalintracranialvol")]
+```
+
+#### Summary of Neuorimaging data quality
+
+```{r}
+## Load in Variables
+library(MatchIt)
+combo1 <- merge(x = behavdata, y = FSQA, by.x = "Subject", by.y = "subject_label")
+combo2 <- merge(x = combo1, y = ThomQA, by.x = "Subject", by.y = "subject_label")
+combo3 <- merge(x = combo2, y = eTIV, by.x = "Subject", by.y = "Subject")
+OrigData <- merge(x = combo3, y = thalvol, by.x = "Subject", by.y = "Subject")
+```
+
+```{r, results='hide'}
+## Remove empty columns from dataframe
+emptycolumns <- colSums(is.na(OrigData)) == nrow(OrigData)
+OrigData[,!emptycolumns]
+```
+```{r, echo = FALSE}
+## Sumarize neuroimaging quality
+print("Number of Good/Bad Structural Images")
+StructNum <- table(OrigData$ThomasStructural)
+StructNum
+print("Number of Good/Bad Thalamus Segmentations Images")
+ThalSegNum <- table(OrigData[OrigData$ThomasStructural=="Good","ThomasThalamus"])
+ThalSegNum
+```
+
+
+```{r}
+## Remove 'bad' Imaging data
+GoodImaging <- OrigData[OrigData$ThomasStructural=="Good" & OrigData$ThomasThalamus=="Good",]
+nrow(GoodImaging)
+```
+
+```{r}
+## Discover Possible Twin Samples
+SubsetDataCol <- GoodImaging[ ,c("Subject","Age in months at the time of the interview/test/sampling/imaging.","Family_ID")]
+colnames(SubsetDataCol) <- c("Subject","Age","Family_ID")
+SubsetDataCol$Age_Family <-paste(SubsetDataCol$Age,SubsetDataCol$Family_ID)
+DupFamily <- SubsetDataCol[duplicated(SubsetDataCol$Age_Family) | duplicated(SubsetDataCol$Age_Family, fromLast = TRUE), ]
+
+nrow(DupFamily)
+
+```
+
+```{r}
+## Write csv file of cleaned data
+write.csv(GoodImaging,"HCP_Aging_CombinedData220131.csv")
+#write.csv(RemoveDuplicates,"Data_Management/HCP_YA/twinsremoved_220128.csv")
+```

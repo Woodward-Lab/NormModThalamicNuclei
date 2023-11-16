@@ -1,0 +1,79 @@
+---
+title: "Data management for the HCP S1200 Dataset"
+author: "Anna Huang"
+date: "1/28/2022"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = 'D:/OneDrive - VUMC/Work/HCP/')
+```
+
+This document details the Human Connectome Project Young Adult sample. 
+
+```{r, echo = FALSE}
+library(readxl)
+behavdata <- read_xlsx("Data_Management/HCP_YA/RESTRICTED_behavioral_HCP_YA.xlsx")
+unbehav <- read_xlsx("Data_Management/HCP_YA/unrestricted_behavioral_HCP_YA.xlsx")
+FSQA <- read_xlsx("Data_Management/HCP_YA/HCP_YA_FS_QA.xlsx","Sheet2")
+ThomQA <- read_xlsx("Data_Management/HCP_YA/HCP_YA_Thomas_QA.xlsx","Sheet1")
+thalvol <- read_xlsx("Data_Management/HCP_YA/HCP_YA_ThalVOls.xlsx")
+FSetiv <- read_xlsx("Data_Management/HCP_YA/HCP_YA_FSeTIV.xlsx")
+eTIV <- FSetiv[,c("Subject","estimatedtotalintracranialvol")]
+```
+
+#### Summary of Neuorimaging data quality
+
+```{r}
+## Load in Variables
+library(MatchIt)
+combo1 <- merge(x = behavdata, y = unbehav, by.x = "Subject", by.y = "Subject")
+combo2 <- merge(x = combo1, y = FSQA, by.x = "Subject", by.y = "subject_label")
+combo3 <- merge(x = combo2, y = ThomQA, by.x = "Subject", by.y = "subject_label")
+combo4 <- merge(x = combo3, y = eTIV, by.x = "Subject", by.y = "Subject")
+HCPYAdataOrig <- merge(x = combo4, y = thalvol, by.x = "Subject", by.y = "Subject")
+```
+
+```{r, results='hide'}
+## Remove empty columns from dataframe
+emptycolumns <- colSums(is.na(HCPYAdataOrig)) == nrow(HCPYAdataOrig)
+HCPYAdataOrig[,!emptycolumns]
+```
+```{r, echo = FALSE}
+## Sumarize neuroimaging quality
+print("Number of QC_Issues indicated as A")
+QC_Issues <- table(HCPYAdataOrig$QC_Issue)
+QC_Issues
+print("Number of Good/Bad Structural Images")
+StructNum <- table(HCPYAdataOrig[!grepl("A", HCPYAdataOrig$QC_Issue),"ThomasStructural"])
+StructNum
+print("Number of Good/Bad Thalamus Segmentations Images")
+ThalSegNum <- table(HCPYAdataOrig[!grepl("A", HCPYAdataOrig$QC_Issue) & HCPYAdataOrig$ThomasStructural=="Good","ThomasThalamus"])
+ThalSegNum
+```
+```{r}
+## Remove 'bad' Imaging data
+HCPYA_GoodImaging <- HCPYAdataOrig[(!grepl("A", HCPYAdataOrig$QC_Issue) & HCPYAdataOrig$ThomasStructural=="Good" & HCPYAdataOrig$ThomasThalamus=="Good"),]
+nrow(HCPYA_GoodImaging)
+```
+
+```{r}
+## How to remove a single twin in twin samples
+TwinSample <- HCPYA_GoodImaging[!is.na(HCPYA_GoodImaging$ZygositySR) & !HCPYA_GoodImaging$ZygositySR == "NotTwin",c("Subject","ZygositySR","ZygosityGT","Family_ID")]
+TwinSample2 <- TwinSample[sample(1:nrow(TwinSample)), ]
+RemoveDuplicates <- TwinSample2[duplicated(TwinSample$Family_ID),]
+HCPYA_NoTWin <- HCPYA_GoodImaging[!HCPYA_GoodImaging$Subject %in% RemoveDuplicates$Subject, ]
+print("Number of Twin subjects removed")
+nrow(RemoveDuplicates)
+print("Final Subject Set for HCP YA")
+nrow(HCPYA_NoTWin)
+```
+
+```{r}
+## Write csv file of cleaned data
+write.csv(HCPYA_NoTWin,"Data_Management/HCP_YA_CombinedData220131.csv")
+write.csv(RemoveDuplicates,"Data_Management/HCP_YA/twinsremoved_220131.csv")
+```

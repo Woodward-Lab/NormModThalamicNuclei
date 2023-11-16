@@ -1,0 +1,94 @@
+---
+title: "HCPLifespanDataHarmonization"
+author: "Anna S Huang"
+date: "8/29/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = 'D:/OneDrive - VUMC/Work/Lifespan/Analysis/')
+#knitr::opts_knit$set(root.dir = "/Users/ashuang/OneDrive - VUMC/Work/HCP/Analysis/")
+```
+
+## Data Harmonization
+
+Data Harmonization for the HCP data was done using neuroCombat https://github.com/Jfortin1/neuroCombat_Rpackage (June 2021 version)
+
+```{r readxl}
+library(neuroCombat)
+library(car)
+
+## Load data file
+FullData <- read.csv("../Data_Management/HCP_PSYXSEC_Combined_220829.csv")
+FullData$L.VL <- FullData$L.VLa + FullData$L.VLP
+FullData$R.VL <- FullData$R.VLa + FullData$R.VLP
+FullData$Subject <- as.factor(FullData$Subject)
+FullData$Sex <- as.factor(FullData$Sex)
+FullData$Family <- as.factor(FullData$Family)
+FullData$Site <- as.factor(FullData$Site)
+FullData$Diagnosis <- as.factor(FullData$Diagnosis)
+```
+
+## Create dataframes for data harmonization
+
+neuroCOMBAT requires at least a data matrix (p x n) in which p rowas are features and n columns are participants. 
+
+Also requires a 'batch' variable that codes scanner id.
+
+Add covariates that will be included in the model.
+
+
+```{r}
+# Transpose dataframe to create data matrix
+Features <- FullData[, c("eTIV","L.Thalamus","L.AV","L.VA","L.VPL","L.Pul","L.LGN","L.MGN","L.CM","L.MD","L.VL",
+                    "R.Thalamus","R.AV","R.VA","R.VPL","R.Pul","R.LGN","R.MGN","R.CM","R.MD","R.VL")]
+datamat <- t(Features)
+batch <- FullData$Site
+mod <- model.matrix(~FullData$Age+FullData$Sex+FullData$Race+FullData$Diagnosis)
+```
+
+```{r}
+# Harmonize data with neuroCombat
+data.harmonized <- neuroCombat(dat=datamat, batch=batch,mod=mod)
+Newdata <- t(data.harmonized$dat.combat)
+colnames(Newdata) <- c("neTIV","nL.Thalamus","nL.AV","nL.VA","nL.VPL","nL.Pul","nL.LGN","nL.MGN","nL.CM","nL.MD","nL.VL",
+                      "nR.Thalamus","nR.AV","nR.VA","nR.VPL","nR.Pul","nR.LGN","nR.MGN","nR.CM","nR.MD","nR.VL")
+```
+
+```{r}
+# Combine into new HCP data
+HCPnew <- cbind(FullData,Newdata)
+```
+
+## Thalamus Plot Checks
+
+```{r}
+scatterplot(HCPnew$eTIV,HCPnew$neTIV, groups=HCPnew$Project, main = "ICV comparison", legend=list(coords="bottomright"))
+scatterplot(HCPnew$L.Thalamus,HCPnew$nL.Thalamus, groups=HCPnew$Project, main = "Whole Left Thalamus comparison", legend=list(coords="bottomright"))
+scatterplot(HCPnew$R.Thalamus,HCPnew$nR.Thalamus, groups=HCPnew$Project, main = "Whole Right Thalamus comparison", legend=list(coords="bottomright"))
+scatterplot(HCPnew$L.AV,HCPnew$nL.AV, groups=HCPnew$Project, main = "Left VA comparison", legend=list(coords="bottomright"))
+scatterplot(HCPnew$R.AV,HCPnew$nR.AV, groups=HCPnew$Project, main = "Right VA Thalamus comparison", legend=list(coords="bottomright"))
+scatterplot(HCPnew$L.VA,HCPnew$nL.VA, groups=HCPnew$Project, main = "Left AV Thalamus comparison", legend=list(coords="bottomright"))
+scatterplot(HCPnew$R.VA,HCPnew$nR.VA, groups=HCPnew$Project, main = "Right AV Thalamus comparison", legend=list(coords="bottomright"))
+scatterplot(HCPnew$L.VPL,HCPnew$nL.VPL, groups=HCPnew$Project, main = "Left VPL Thalamus comparison", legend=list(coords="bottomright"))
+scatterplot(HCPnew$R.VPL,HCPnew$nR.VPL, groups=HCPnew$Project, main = "Right VPL Thalamus comparison", legend=list(coords="bottomright"))
+scatterplot(HCPnew$L.Pul,HCPnew$nL.Pul, groups=HCPnew$Project, main = "Left Pul Thalamus comparison", legend=list(coords="bottomright"))
+scatterplot(HCPnew$R.Pul,HCPnew$nR.Pul, groups=HCPnew$Project, main = "Right Pul Thalamus comparison", legend=list(coords="bottomright"))
+scatterplot(HCPnew$L.LGN,HCPnew$nL.LGN, groups=HCPnew$Project, main = "Left LGN Thalamus comparison", legend=list(coords="bottomright"))
+scatterplot(HCPnew$R.LGN,HCPnew$nR.LGN, groups=HCPnew$Project, main = "Right LGN Thalamus comparison", legend=list(coords="bottomright"))
+scatterplot(HCPnew$L.MGN,HCPnew$nL.MGN, groups=HCPnew$Project, main = "Left MGN Thalamus comparison", legend=list(coords="bottomright"))
+scatterplot(HCPnew$R.MGN,HCPnew$nR.MGN, groups=HCPnew$Project, main = "Right MGN Thalamus comparison", legend=list(coords="bottomright"))
+scatterplot(HCPnew$L.CM,HCPnew$nL.CM, groups=HCPnew$Project, main = "Left CM Thalamus comparison", legend=list(coords="bottomright"))
+scatterplot(HCPnew$R.CM,HCPnew$nR.CM, groups=HCPnew$Project, main = "Right CM Thalamus comparison", legend=list(coords="bottomright"))
+scatterplot(HCPnew$L.MD,HCPnew$nL.MD, groups=HCPnew$Project, main = "Left MD Thalamus comparison", legend=list(coords="bottomright"))
+scatterplot(HCPnew$R.MD,HCPnew$nR.MD, groups=HCPnew$Project, main = "Right MD Thalamus comparison", legend=list(coords="bottomright"))
+scatterplot(HCPnew$L.VL,HCPnew$nL.VL, groups=HCPnew$Project, main = "Left VL Thalamus comparison", legend=list(coords="bottomright"))
+scatterplot(HCPnew$R.VL,HCPnew$nR.VL, groups=HCPnew$Project, main = "Right VL Thalamus comparison", legend=list(coords="bottomright"))
+```
+
+
+```{r}
+# Write into new csv file
+write.csv(HCPnew,"HCP_PSYXSEC_DataHarmonized_220829.csv")
+```

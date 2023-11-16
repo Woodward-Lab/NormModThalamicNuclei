@@ -1,0 +1,108 @@
+---
+title: "THOMAS_outliers"
+author: "Anna Huang"
+date: '2022-08-29'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = 'D:/OneDrive - VUMC/Work/Lifespan/Data_Management/PSYXSEC/')
+#knitr::opts_knit$set(root.dir = "/Users/ashuang/OneDrive - VUMC/Work/HCP/DataManagement/")
+```
+
+```{r}
+library(readxl)
+library(dplyr)
+library(Hmisc)
+```
+
+## Load Imaging file info
+
+Thomas volumes, Thomas QA
+
+```{r}
+ThomasVols <- read_xlsx("PSYXSEC_thomas_vols.xlsx")
+ThomasQA <- read_xlsx("download_report_ndw_ah_v2.xlsx")
+PSYXSECscan <- read.csv("PSYXSEC_scans.csv")
+Thomasassessor <- read_xlsx("status_by_assessor-PSYXSEC_thomas_v2.xlsx")
+FSassessor <- read_xlsx("status_by_assessor-PSYXSEC_freesurfer.xlsx")
+FSVols <- read_xlsx("PSYXSEC_freesurfer_vols.xlsx")
+
+
+combo1 <- merge(x = PSYXSECscan, y = Thomasassessor, by.x = c("subject_label","as_label"), 
+                by.y = c("subject_label","scan_t1"))
+combo2 <- merge(x = combo1, y = FSassessor, by.x = c("subject_label","as_label"), 
+                by.y = c("subject_label","scan_t1"))
+combo3 <- merge(x = combo2, y = ThomasQA, by.x = "THassessor_label", by.y = "as_label")
+combo4 <- merge(x = combo3, y = ThomasVols, by.x = "THassessor_label", by.y = "THFile")
+combo5 <- merge(x = combo4, y = FSVols, by.x = "FSassessor_label", by.y = "FSFile")
+```
+## Select One T1
+
+Remove one T1 in subjects with more than 1 T1, done in order:
+1. Select all scans with good Structural quality and good THOMAS segmentation
+2. Remove all 'REPEAT' scans from subjects with 2 of the same T1s (original PGPP)
+3. Select scan with T1_tr9_te5 parameters from those remaining (WOODWARD TCP dataset)
+
+```{r}
+## Remove duplicate T1s in the following 
+ImageData <- combo5[combo5$quality=="Good" & combo5$Structural=="Good",]
+allsubjs <- unique(combo5$subject_label.x)
+goodsubjs <- unique(ImageData$subject_label.x)
+BadScans <- length(allsubjs) - length(goodsubjs)
+
+A <- !(duplicated(ImageData$subject_label.x)|duplicated(ImageData$subject_label.x,fromLast=TRUE))
+Dup <- ImageData[A==FALSE,]
+Sing <- ImageData[A==TRUE,]
+repval <- grep("REPEAT",Dup$as_type.x)
+RepOnly <- Dup[repval,]
+DoubleRep <- duplicated(RepOnly$subject_label.x,fromLast=TRUE)
+NoRep <- Dup[-repval,]
+NoRep <- rbind(NoRep,RepOnly[DoubleRep==TRUE,])
+B <- !(duplicated(NoRep$subject_label.x)|duplicated(NoRep$subject_label.x,fromLast=TRUE))
+C <- rbind(Sing,NoRep[B==TRUE,])
+D <- NoRep[B==FALSE,]
+E <- D[D$as_type.x=="T1_tr9_te5",]
+Final <- rbind(C,E)
+#rm(A,Dup,Sing,repval,NoRep,B,C,D,E,combo1,combo2,combo3)
+```
+
+## Concatenate Behavioural Data
+
+```{r}
+PSYXSECpheno <- read.csv("PSYXSECPhenoDataBrainAge.csv")
+ImBehMerge <- merge(x=Final,y=PSYXSECpheno,by.x="subject_label.x",by.y="XNAT.Subject.ID")
+ImBehMerge$Age <- round(difftime(ImBehMerge$MRI.date,ImBehMerge$DOB,units="days") / 365,digits=1)
+
+PSYvol.df <- ImBehMerge[,c("subject_label.x","as_type.x","quality","Structural","Thalamus","Diagnosis",
+                            "Age","Sex","Race","Ethnicity","DOB","Date.of.Onset.of.Psychotic.Illness.",
+                            "Years.of.education","Average.Parental.Education",
+                            "L-1-THALAMUS","L-2-AV","L-4-VA","L-5-VLa","L-6-VLP","L-7-VPL","L-8-Pul",
+                            "L-9-LGN","L-10-MGN","L-11-CM","L-12-MD-Pf",
+                            "R-1-THALAMUS","R-2-AV","R-4-VA","R-5-VLa","R-6-VLP","R-7-VPL","R-8-Pul",
+                            "R-9-LGN","R-10-MGN","R-11-CM","R-12-MD-Pf","estimatedtotalintracranialvol")]
+colnames(PSYvol.df) <- c("Subject","ScanType","Quality","Structural","Thalamus","Diagnosis",
+                         "Age","Sex","Race","Ethnicity","DOB","Onset",
+                         "Education","ParentEducation",
+                         "L.Thal","L.AV","L.VA","L.VLa","L.VLp","L.VPL","L.Pul",
+                         "L.LGN","L.MGN","L.CM","L.MD",
+                         "R.Thal","R.AV","R.VA","R.VLa","R.VLp","R.VPL","R.Pul",
+                         "R.LGN","R.MGN","R.CM","R.MD","eTIV")
+PSYvol.df <- PSYvol.df[PSYvol.df$Diagnosis=="Schizoaffective Disorder" | PSYvol.df$Diagnosis=="Schizophrenia" | PSYvol.df$Diagnosis=="Schizophreniform" | PSYvol.df$Diagnosis=="Normal Control",]
+dxexclude <- nrow(ImBehMerge) - nrow(PSYvol.df)
+## Total number excluded for bad T1 quality 
+print(BadScans)
+
+## Total number excluded for diagnosis
+print(dxeclude)
+```
+
+```{r}
+#PSYXSEC.eTIV <- read_xlsx("ThalVolSeg_AllVolumes.xlsx","Sheet3")
+#PSYvol2.df <- merge(x = PSYvol.df, y = PSYXSEC.eTIV, by.x = "Subject", by.y = "Subject")
+```
+
+```{r}
+write.csv(PSYvol.df,"../PSYXSEC_Volumes_eTIV_221101.csv")
+```
